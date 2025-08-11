@@ -1,0 +1,963 @@
+#define _CRT_SECURE_NO_WARNINGS // 禁用VS编译器的安全警告（如fopen函数）
+#include <stdio.h>  // 标准输入输出库（printf、文件操作等）
+#include <stdlib.h> // 标准库（内存分配、随机数、程序退出等）
+#include <conio.h>  // 控制台输入库（检测键盘按键）
+#include <windows.h>// Windows系统API（控制台光标、颜色控制等）
+#include <time.h>   // 时间库（初始化随机数种子）
+#include <stdbool.h>// 布尔类型库（true/false）
+#include <io.h>     // 输入输出辅助库（预留扩展）
+
+
+// 难度常量：控制游戏速度和食物复杂度
+#define EASY 1       // 简单难度
+#define MEDIUM 2     // 中等难度
+#define HARD 3       // 困难难度
+#define DEVIL 4      // 噩梦难度
+
+// 菜单选项常量：标识主菜单的可选项
+#define MENU_START 0       // 开始游戏
+#define MENU_DIFFICULTY 1  // 难度设置
+#define MENU_EXIT 2        // 退出游戏
+
+// 最高分文件路径：用于持久化存储最高分数据
+#define HIGHSCORE_FILE "snake_highscore.dat"
+
+// 颜色常量：对应Windows控制台颜色值（前景色）
+#define RED 12       // 红色
+#define GREEN 10     // 绿色
+#define YELLOW 14    // 黄色
+#define BLUE 9       // 蓝色
+#define WHITE 15     // 白色
+
+// 游戏核心常量：控制游戏规则和性能参数
+#define MAX_SNAKE_LENGTH 100  // 蛇的最大长度（链表节点数量上限）
+#define NORMAL_SPEED 100      // 正常移动速度（毫秒/帧）
+#define SLOW_SPEED 150        // 慢速移动速度（预留）
+#define FAST_SPEED 50         // 加速移动速度（长按方向键）
+#define MAX_FOOD 100          // 最大食物数量
+#define DEVIL_SPEED 10        // 噩梦难度正常速度
+#define DEVIL_FAST_SPEED 5    // 噩梦难度加速速度
+
+// 食物生成概率：控制不同难度下食物出现的频率
+#define FOOD_SPAWN_PROBABILITY 0.02f  // 基础概率2%
+#define DIFFICULTY_BONUS_EASY 0.0f    // 简单难度无额外概率
+#define DIFFICULTY_BONUS_MEDIUM 0.03f // 中等难度+3%（总5%）
+#define DIFFICULTY_BONUS_HARD 0.15f   // 困难难度+15%（总20%）
+
+
+// 函数声明：提前声明所有函数，确保编译器能识别调用
+int drawStartScreen(int dif);       // 绘制开始菜单，返回选中的难度
+void drawGameTitle();               // 绘制游戏标题（ASCII艺术字）
+void drawMenu(int selected);        // 绘制主菜单，高亮选中项
+void clearScreen();                 // 清空控制台屏幕
+int drawDifficultyMenu();           // 绘制难度选择菜单，返回选中的难度
+void setColor(int color);           // 设置控制台文本颜色
+void setCursorPosition(int x, int y);// 设置光标位置（x列，y行）
+void hideCursor();                  // 隐藏控制台光标（避免闪烁）
+
+
+// 控制台信息结构体：存储控制台尺寸和偏移量（用于元素定位）
+typedef struct {
+    int width;    // 控制台宽度（字符数）
+    int height;   // 控制台高度（字符数）
+    int offsetX;  // X方向偏移（边框留白）
+    int offsetY;  // Y方向偏移（边框留白）
+} ConsoleInfo;
+
+// 方向枚举：定义蛇的移动方向（控制逻辑核心）
+enum Direction { STOP = 0, LEFT, RIGHT, UP, DOWN };
+
+// 效果枚举：定义食物的特殊效果（影响游戏速度）
+enum Effict { Speed, slow, reverse, normal };
+
+// 蛇节点结构体（链表节点）：存储蛇的一个节段的坐标
+typedef struct SnakeNode {
+    int x;                  // 节点X坐标（游戏区域内）
+    int y;                  // 节点Y坐标（游戏区域内）
+    struct SnakeNode* next; // 指向下一个节点的指针（链表核心）
+} SnakeNode;
+
+// 蛇结构体（链表管理）：管理整个蛇的链表结构
+typedef struct {
+    SnakeNode* head; // 链表头节点（蛇头）
+    SnakeNode* tail; // 链表尾节点（蛇尾）
+    int length;      // 蛇的长度（节点数量）
+    enum Direction dir; // 当前移动方向
+} Snake;
+
+// 食物结构体：存储单种食物的属性和位置
+typedef struct {
+    int x[MAX_FOOD];       // 食物X坐标数组
+    int y[MAX_FOOD];       // 食物Y坐标数组
+    int count;             // 该类型食物的数量
+    int score;             // 吃该食物获得的分数
+    int color;             // 食物显示颜色
+    char symbol;           // 食物显示符号（如*、@）
+    int growth;            // 吃后蛇增长的节数
+    enum Effict eff;       // 食物的特殊效果（加速、减速等）
+} Food;
+
+// 游戏状态结构体：存储整个游戏的核心数据
+typedef struct {
+    Snake snake;               // 蛇的信息（链表结构）
+    Food food[6];              // 食物数组（最多6种类型）
+    int foodTypes;             // 当前启用的食物类型数量（随难度增加）
+    int score;                 // 当前游戏分数
+    bool gameOver;             // 游戏是否结束（true为结束）
+    int width;                 // 游戏区域宽度（字符数）
+    int height;                // 游戏区域高度（字符数）
+    int highScore;             // 历史最高分
+    int difficulty;            // 当前游戏难度（EASY/MEDIUM等）
+    bool paused;               // 游戏是否暂停（true为暂停）
+    enum Effict ef;            // 当前生效的食物效果
+    int speed;                 // 当前游戏速度（毫秒/帧）
+} GameState;
+
+
+// 功能：设置控制台文本颜色
+// 参数：color - Windows控制台颜色值（如RED=12）
+void setColor(int color) {
+    // 获取标准输出设备句柄（Windows API）
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    // 设置文本属性（颜色）
+    SetConsoleTextAttribute(hConsole, color);
+}
+
+
+// 功能：设置控制台光标位置
+// 参数：x - 列坐标，y - 行坐标
+void setCursorPosition(int x, int y) {
+    COORD coord;  // Windows定义的坐标结构体
+    coord.X = x;
+    coord.Y = y;
+    // 移动光标到指定位置（Windows API）
+    SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+}
+
+
+// 功能：隐藏控制台光标（避免蛇移动时的光标闪烁）
+void hideCursor() {
+    HANDLE consoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO info;  // 光标信息结构体
+    info.dwSize = 100;         // 光标大小（1-100）
+    info.bVisible = FALSE;     // 光标不可见
+    // 设置光标信息（Windows API）
+    SetConsoleCursorInfo(consoleHandle, &info);
+}
+
+
+// 功能：获取控制台信息（宽度、高度、偏移量）
+// 返回：ConsoleInfo结构体，包含控制台尺寸和偏移
+ConsoleInfo getConsoleInfo() {
+    ConsoleInfo info;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;  // Windows控制台缓冲区信息
+
+    // 获取控制台缓冲区信息（包含窗口尺寸）
+    GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+
+    // 计算控制台实际宽度和高度（字符数）
+    info.width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    info.height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    // 设置游戏区域偏移量（边框留白2字符）
+    info.offsetX = 2;
+    info.offsetY = 2;
+
+    return info;
+}
+
+
+// 功能：从文件加载历史最高分
+// 返回：读取到的最高分（文件不存在则返回0）
+int loadHighScore() {
+    // 以二进制只读模式打开最高分文件
+    FILE* file = fopen(HIGHSCORE_FILE, "rb");
+    int highScore = 0;  // 默认最高分为0
+
+    if (file) {  // 若文件存在
+        // 从文件读取1个int类型数据（最高分）
+        fread(&highScore, sizeof(int), 1, file);
+        fclose(file);  // 关闭文件
+    }
+    return highScore;
+}
+
+
+// 功能：将当前最高分保存到文件
+// 参数：score - 需要保存的最高分
+void saveHighScore(int score) {
+    // 以二进制写入模式打开文件（不存在则创建）
+    FILE* file = fopen(HIGHSCORE_FILE, "wb");
+    if (file) {  // 若文件打开成功
+        // 写入最高分数据
+        fwrite(&score, sizeof(int), 1, file);
+        fclose(file);  // 关闭文件
+    }
+}
+
+
+// 功能：初始化食物类型（根据难度设置可用食物）
+// 参数：game - 游戏状态指针
+void initFoodTypes(GameState* game) {
+    // 初始化6种食物的属性（颜色、符号、分数、增长值、效果）
+    game->food[0].color = GREEN;
+    game->food[0].symbol = '*';
+    game->food[0].score = 1;
+    game->food[0].growth = 1;
+    game->food[0].eff = normal;
+
+    game->food[1].color = BLUE;
+    game->food[1].symbol = '@';
+    game->food[1].score = 3;
+    game->food[1].growth = 3;
+    game->food[1].eff = normal;
+
+    game->food[2].color = YELLOW;
+    game->food[2].symbol = '$';
+    game->food[2].score = 5;
+    game->food[2].growth = 5;
+    game->food[2].eff = normal;
+
+    game->food[3].color = 0xB;  // 青色
+    game->food[3].symbol = 'S';
+    game->food[3].score = 1;
+    game->food[3].growth = 1;
+    game->food[3].eff = Speed;
+
+    game->food[4].color = 0xE;  // 亮黄色
+    game->food[4].symbol = 'L';
+    game->food[4].score = 2;
+    game->food[4].growth = 2;
+    game->food[4].eff = slow;
+
+    game->food[5].color = 0xD;  // 粉色
+    game->food[5].symbol = 'R';
+    game->food[5].score = 3;
+    game->food[5].growth = 3;
+    game->food[5].eff = reverse;
+
+    // 根据难度设置启用的食物类型数量
+    game->foodTypes = (game->difficulty == EASY) ? 2 :  // 简单：2种
+        (game->difficulty == MEDIUM) ? 4 : 6;  // 中等：4种；困难/噩梦：6种
+}
+
+
+// 功能：创建新的蛇节点（链表基本操作）
+// 参数：x - 节点X坐标，y - 节点Y坐标
+// 返回：新节点指针（失败返回NULL）
+SnakeNode* createSnakeNode(int x, int y) {
+    // 为新节点分配内存
+    SnakeNode* node = (SnakeNode*)malloc(sizeof(SnakeNode));
+    if (node) {  // 分配成功
+        node->x = x;       // 初始化X坐标
+        node->y = y;       // 初始化Y坐标
+        node->next = NULL; // 下一节点初始为NULL
+    }
+    return node;  // 返回新节点
+}
+
+
+// 功能：释放蛇的整个链表（防止内存泄漏）
+// 参数：snake - 蛇结构体指针
+void freeSnake(Snake* snake) {
+    SnakeNode* current = snake->head;  // 从头部开始遍历
+    while (current) {  // 循环直到所有节点被释放
+        SnakeNode* next = current->next;  // 保存下一节点地址
+        free(current);                    // 释放当前节点
+        current = next;                   // 移动到下一节点
+    }
+    // 重置蛇的状态
+    snake->head = NULL;
+    snake->tail = NULL;
+    snake->length = 0;
+}
+
+
+// 功能：初始化游戏状态（蛇、食物、分数等）
+// 参数：game - 游戏状态指针，difficulty - 游戏难度
+void initGame(GameState* game, int difficulty) {
+    ConsoleInfo console = getConsoleInfo();  // 获取控制台信息
+    game->ef = normal;  // 初始无食物效果
+
+    // 设置游戏区域尺寸（减去边框和信息栏）
+    game->width = console.width - 4;
+    game->height = console.height - 6;
+    // 确保游戏区域不小于最小尺寸（10x10）
+    if (game->width < 10) game->width = 10;
+    if (game->height < 10) game->height = 10;
+
+    // 初始化蛇链表（初始长度3节）
+    game->snake.head = NULL;
+    game->snake.tail = NULL;
+    game->snake.length = 0;
+    game->snake.dir = RIGHT;  // 初始方向向右
+
+    // 创建初始3个节点（蛇头到蛇尾依次排列）
+    int startX = game->width / 2;  // 初始X坐标（屏幕中间）
+    int startY = game->height / 2; // 初始Y坐标（屏幕中间）
+    for (int i = 0; i < 3; i++) {
+        SnakeNode* newNode = createSnakeNode(startX - i, startY);
+        if (!game->snake.head) {  // 第一个节点（头和尾都是该节点）
+            game->snake.head = newNode;
+            game->snake.tail = newNode;
+        }
+        else {  // 后续节点（添加到尾部）
+            game->snake.tail->next = newNode;  // 尾节点指向新节点
+            game->snake.tail = newNode;        // 更新尾节点
+        }
+        game->snake.length++;  // 长度+1
+    }
+
+    // 初始化随机数种子（确保每次游戏随机结果不同）
+    srand((unsigned int)time(NULL));
+
+    // 初始化难度和食物类型
+    game->difficulty = difficulty;
+    initFoodTypes(game);
+
+    // 初始化食物：仅生成1个基础食物（0号）
+    for (int i = 0; i < game->foodTypes; i++) {
+        game->food[i].count = (i == 0) ? 1 : 0;  // 仅0号食物初始数量为1
+        if (i == 0) {  // 为0号食物生成初始位置
+            game->food[i].x[0] = rand() % (game->width - 2) + 1;
+            game->food[i].y[0] = rand() % (game->height - 2) + 1;
+        }
+    }
+
+    // 初始化游戏状态变量
+    game->score = 0;           // 初始分数0
+    game->gameOver = false;    // 游戏未结束
+    game->highScore = loadHighScore();  // 加载历史最高分
+    game->paused = false;      // 初始未暂停
+}
+
+
+// 功能：绘制游戏边界和信息栏
+// 参数：game - 游戏状态指针
+void drawBoundary(GameState* game) {
+    ConsoleInfo console = getConsoleInfo();  // 获取控制台信息
+    setColor(WHITE);  // 边框和文字用白色
+
+    // 绘制上边框（一行'#'字符）
+    setCursorPosition(console.offsetX, console.offsetY);
+    for (int i = 0; i < game->width + 2; i++)  // 宽度=游戏区域宽+2（左右边框）
+        printf("#");
+
+    // 绘制左右边框（每行列首和列尾各一个'#'）
+    for (int i = 1; i <= game->height; i++) {
+        setCursorPosition(console.offsetX, console.offsetY + i);  // 左边界
+        printf("#");
+        setCursorPosition(console.offsetX + game->width + 1, console.offsetY + i);  // 右边界
+        printf("#");
+    }
+
+    // 绘制下边框（一行'#'字符）
+    setCursorPosition(console.offsetX, console.offsetY + game->height + 1);
+    for (int i = 0; i < game->width + 2; i++)
+        printf("#");
+
+    // 绘制信息栏：当前分数
+    setCursorPosition(console.offsetX, console.offsetY + game->height + 2);
+    printf("Score: %d", game->score);
+
+    // 绘制信息栏：最高分
+    setCursorPosition(console.offsetX, console.offsetY + game->height + 3);
+    printf("High Score: %d", game->highScore);
+
+    // 绘制信息栏：控制提示
+    setCursorPosition(console.offsetX, console.offsetY + game->height + 4);
+    printf("Controls: W(Up), S(Down), A(Left), D(Right), P(Pause), X(Exit)");
+
+    // 绘制当前难度
+    const char* difficultyStr;
+    switch (game->difficulty) {
+    case EASY:   difficultyStr = "Easy"; break;
+    case MEDIUM: difficultyStr = "Medium"; break;
+    case HARD:   difficultyStr = "Hard"; break;
+    default:     difficultyStr = "unknown"; break;
+    }
+    setCursorPosition(console.offsetX + 20, console.offsetY + game->height + 4);
+    printf("difficulty: %s", difficultyStr);
+
+    // 绘制食物类型说明（显示每种食物的符号）
+    setCursorPosition(console.offsetX + 40, console.offsetY + game->height + 4);
+    printf("Food: ");
+    for (int i = 0; i < game->foodTypes; i++) {
+        setColor(game->food[i].color);  // 使用食物自身颜色
+        printf("%c ", game->food[i].symbol);
+    }
+    setColor(WHITE);  // 恢复白色
+}
+
+
+// 功能：绘制游戏元素（蛇、食物、暂停信息）
+// 参数：game - 游戏状态指针，isSpeeding - 是否处于加速状态
+void drawGameElements(GameState* game, bool isSpeeding) {
+    ConsoleInfo console = getConsoleInfo();  // 获取控制台信息
+
+    // 清除上一帧的蛇尾（避免残留）
+    static int lastTailX = -1, lastTailY = -1;  // 静态变量保存上一帧尾坐标
+    if (lastTailX != -1 && lastTailY != -1) {
+        // 定位到蛇尾位置，用空格覆盖
+        setCursorPosition(console.offsetX + lastTailX + 1, console.offsetY + lastTailY + 1);
+        printf(" ");
+    }
+
+    // 更新当前蛇尾坐标（用于下一帧清除）
+    if (game->snake.tail) {
+        lastTailX = game->snake.tail->x;
+        lastTailY = game->snake.tail->y;
+    }
+
+    // 绘制蛇头（链表头节点）
+    if (game->snake.head) {
+        setColor(isSpeeding ? RED : 4);  // 加速时红色，否则深紫色（4）
+        setCursorPosition(console.offsetX + game->snake.head->x + 1,
+            console.offsetY + game->snake.head->y + 1);
+        printf("O");  // 蛇头符号
+    }
+
+    // 绘制蛇身（遍历链表，从head->next开始）
+    setColor(isSpeeding ? RED : 4);
+    SnakeNode* current = game->snake.head ? game->snake.head->next : NULL;
+    while (current) {  // 循环直到链表末尾（current为NULL）
+        setCursorPosition(console.offsetX + current->x + 1, console.offsetY + current->y + 1);
+        printf("o");  // 蛇身符号
+        current = current->next;  // 移动到下一节点
+    }
+
+    // 绘制所有食物
+    for (int i = 0; i < game->foodTypes; i++) {  // 遍历食物类型
+        for (int j = 0; j < game->food[i].count; j++) {  // 遍历该类型的每个食物
+            setColor(game->food[i].color);  // 食物颜色
+            setCursorPosition(console.offsetX + game->food[i].x[j] + 1,
+                console.offsetY + game->food[i].y[j] + 1);
+            printf("%c", game->food[i].symbol);  // 食物符号
+        }
+    }
+
+    // 更新分数显示（仅更新数字部分）
+    setColor(WHITE);
+    setCursorPosition(console.offsetX + 7, console.offsetY + game->height + 2);
+    printf("%d", game->score);
+
+    // 若游戏暂停，显示暂停信息
+    if (game->paused) {
+        setColor(YELLOW);  // 黄色文字
+        setCursorPosition(console.offsetX + game->width / 2 - 9, console.offsetY + game->height / 2);
+        printf("游戏暂停中");
+        setCursorPosition(console.offsetX + game->width / 2 - 12, console.offsetY + game->height / 2 + 1);
+        printf("按 P 键继续游戏");
+    }
+}
+
+
+// 功能：处理用户输入（控制蛇移动、暂停、重置等）
+// 参数：game - 游戏状态指针，currentDir - 当前移动方向
+// 返回：是否处于加速状态（长按方向键）
+bool input(GameState* game, enum Direction currentDir) {
+    bool isSpeeding = false;  // 是否加速
+
+    if (_kbhit()) {  // 检测到有按键按下
+        int key = _getch();  // 获取按键（无需回车）
+        switch (key) {
+        case 'a':  // 左移
+            // 防止直接反向（如向右时不能直接向左）
+            if (game->snake.dir != RIGHT)
+                game->snake.dir = LEFT;
+            isSpeeding = true;  // 长按加速
+            break;
+        case 'd':  // 右移
+            if (game->snake.dir != LEFT)
+                game->snake.dir = RIGHT;
+            isSpeeding = true;
+            break;
+        case 'w':  // 上移
+            if (game->snake.dir != DOWN)
+                game->snake.dir = UP;
+            isSpeeding = true;
+            break;
+        case 's':  // 下移
+            if (game->snake.dir != UP)
+                game->snake.dir = DOWN;
+            isSpeeding = true;
+            break;
+        case 'x':  // 退出游戏
+            game->gameOver = true;  // 标记游戏结束
+            break;
+        case 'r':  // 重置游戏
+            freeSnake(&game->snake);  // 释放旧蛇链表
+            initGame(game, game->difficulty);  // 重新初始化
+            clearScreen();  // 清屏
+            break;
+        case 'p':
+        case 'P':  // 暂停/继续
+            game->paused = !game->paused;  // 切换暂停状态
+            clearScreen();  // 清屏刷新
+            break;
+        }
+    }
+
+    return isSpeeding;  // 返回是否加速
+}
+
+
+// 功能：随机生成新食物（确保不与蛇或现有食物重叠）
+// 参数：game - 游戏状态指针
+void spawnFood(GameState* game) {
+    // 随机选择一种食物类型（0到foodTypes-1）
+    int foodType = rand() % game->foodTypes;
+
+    // 若该类型食物已达最大数量，不再生成
+    if (game->food[foodType].count >= MAX_FOOD)
+        return;
+
+    bool validPosition = false;  // 位置是否有效（不重叠）
+    int maxAttempts = 100;       // 最大尝试次数（防止死循环）
+    int newX, newY;              // 新食物坐标
+
+    do {
+        // 生成随机坐标（避免贴边）
+        newX = rand() % (game->width - 2) + 1;
+        newY = rand() % (game->height - 2) + 1;
+        validPosition = true;
+
+        // 检查是否与蛇身重叠（遍历链表）
+        SnakeNode* current = game->snake.head;
+        while (current) {
+            if (newX == current->x && newY == current->y) {
+                validPosition = false;  // 重叠则无效
+                break;
+            }
+            current = current->next;  // 移动到下一节点
+        }
+
+        // 检查是否与现有食物重叠
+        if (validPosition) {
+            for (int i = 0; i < game->foodTypes; i++) {
+                for (int j = 0; j < game->food[i].count; j++) {
+                    if (newX == game->food[i].x[j] && newY == game->food[i].y[j]) {
+                        validPosition = false;
+                        break;
+                    }
+                }
+                if (!validPosition) break;
+            }
+        }
+
+        maxAttempts--;  // 减少尝试次数
+    } while (!validPosition && maxAttempts > 0);  // 直到位置有效或尝试耗尽
+
+    if (validPosition) {  // 若找到有效位置
+        // 添加新食物到该类型的数组
+        game->food[foodType].x[game->food[foodType].count] = newX;
+        game->food[foodType].y[game->food[foodType].count] = newY;
+        game->food[foodType].count++;  // 数量+1
+    }
+}
+
+
+// 功能：更新游戏状态（蛇移动、吃食物、碰撞检测等）
+// 参数：game - 游戏状态指针
+void update(GameState* game) {
+    // 若游戏暂停，不更新状态
+    if (game->paused) {
+        return;
+    }
+
+    // 若蛇为空（异常情况），直接返回
+    if (!game->snake.head) {
+        return;
+    }
+
+    // 计算新蛇头位置（根据当前方向）
+    int newHeadX = game->snake.head->x;
+    int newHeadY = game->snake.head->y;
+    switch (game->snake.dir) {
+    case LEFT:  newHeadX--; break;  // 左移：x-1
+    case RIGHT: newHeadX++; break;  // 右移：x+1
+    case UP:    newHeadY--; break;  // 上移：y-1
+    case DOWN:  newHeadY++; break;  // 下移：y+1
+    }
+
+    // 创建新蛇头节点（链表头部插入）
+    SnakeNode* newHead = createSnakeNode(newHeadX, newHeadY);
+    if (!newHead) {  // 内存分配失败
+        game->gameOver = true;
+        return;
+    }
+    newHead->next = game->snake.head;  // 新节点指向旧头
+    game->snake.head = newHead;        // 更新头节点为新节点
+    game->snake.length++;              // 长度+1
+
+    // 检查是否吃到食物
+    bool ateFood = false;  // 是否吃到食物
+    for (int k = 0; k < game->foodTypes; k++) {  // 遍历食物类型
+        for (int i = 0; i < game->food[k].count; i++) {  // 遍历该类型食物
+            // 若蛇头坐标与食物坐标相同（吃到食物）
+            if (newHeadX == game->food[k].x[i] && newHeadY == game->food[k].y[i]) {
+                // 获取食物属性
+                int growth = game->food[k].growth;  // 增长节数
+                game->ef = game->food[k].eff;       // 食物效果
+                game->score += 10 * game->food[k].score;  // 加分
+
+                // 移除被吃掉的食物
+                if (game->food[k].count > 1) {  // 若数量>1，覆盖被吃位置
+                    for (int j = i; j < game->food[k].count - 1; j++) {
+                        game->food[k].x[j] = game->food[k].x[j + 1];
+                        game->food[k].y[j] = game->food[k].y[j + 1];
+                    }
+                }
+                game->food[k].count--;  // 数量-1
+                ateFood = true;
+
+                // 根据growth值增长蛇身（尾部添加节点）
+                for (int g = 0; g < growth; g++) {
+                    // 复制尾节点坐标创建新节点
+                    SnakeNode* newNode = createSnakeNode(game->snake.tail->x, game->snake.tail->y);
+                    if (newNode) {
+                        game->snake.tail->next = newNode;  // 尾节点指向新节点
+                        game->snake.tail = newNode;        // 更新尾节点
+                        game->snake.length++;              // 长度+1
+                    }
+                }
+                break;  // 跳出当前食物类型循环
+            }
+        }
+        if (ateFood) break;  // 跳出所有食物类型循环
+    }
+
+    // 未吃到食物：移除尾节点（保持长度不变）
+    if (!ateFood) {
+        // 找到倒数第二个节点（新尾节点）
+        SnakeNode* current = game->snake.head;
+        SnakeNode* prev = NULL;
+        while (current->next) {  // 遍历到尾节点的前一个
+            prev = current;
+            current = current->next;
+        }
+
+        // 移除尾节点
+        prev->next = NULL;    // 新尾节点的next设为NULL
+        free(game->snake.tail);  // 释放旧尾节点
+        game->snake.tail = prev; // 更新尾节点
+        game->snake.length--;    // 长度-1
+    }
+
+    // 吃到食物后，确保至少有1个食物存在
+    if (ateFood) {
+        for (int i = 0; i < game->foodTypes; i++) {
+            if (game->food[i].count == 0) {  // 若某类型食物数量为0
+                spawnFood(game);  // 生成新食物
+                break;
+            }
+        }
+    }
+
+    // 按概率随机生成新食物（难度越高概率越大）
+    float spawnProb = FOOD_SPAWN_PROBABILITY;  // 基础2%
+    switch (game->difficulty) {
+    case MEDIUM: spawnProb += DIFFICULTY_BONUS_MEDIUM; break;  // 中等+3%（总5%）
+    case HARD:   spawnProb += DIFFICULTY_BONUS_HARD; break;    // 困难+6%（总8%）
+    }
+    // 生成随机数，若小于概率则生成食物
+    if ((float)rand() / RAND_MAX < spawnProb) {
+        spawnFood(game);
+    }
+
+    // 碰撞检测：撞墙（超出游戏区域边界）
+    if (newHeadX < 0 || newHeadX >= game->width ||
+        newHeadY < 0 || newHeadY >= game->height) {
+        game->gameOver = true;  // 标记游戏结束
+    }
+
+    // 碰撞检测：撞自身（蛇头与蛇身重叠）
+    SnakeNode* current = game->snake.head->next;  // 从蛇头下一个节点开始
+    while (current) {
+        if (newHeadX == current->x && newHeadY == current->y) {
+            game->gameOver = true;  // 标记游戏结束
+            break;
+        }
+        current = current->next;  // 移动到下一节点
+    }
+}
+
+
+// 功能：清空控制台屏幕
+void clearScreen() {
+    system("cls");  // 调用系统命令cls清屏
+}
+
+
+// 功能：绘制游戏标题（ASCII艺术字）
+void drawGameTitle() {
+    ConsoleInfo console = getConsoleInfo();
+    int centerX = console.width / 2;  // 控制台中心X坐标
+
+    // 绘制红色蛇形ASCII标题
+    setColor(RED);
+    setCursorPosition(centerX - 18, 5);
+    printf("  _________              __           ");
+    setCursorPosition(centerX - 18, 6);
+    printf(" /   _____/ ____   _____/  |_  ____   ");
+    setCursorPosition(centerX - 18, 7);
+    printf(" \\_____  \\_/ __ \\_/ ___\\   __\\/ __ \\  ");
+    setCursorPosition(centerX - 18, 8);
+    printf(" /        \\  ___/\\  \\___|  | \\  ___/  ");
+    setCursorPosition(centerX - 18, 9);
+    printf("/_______  /\\___  >\\___  >__|  \\___  > ");
+    setCursorPosition(centerX - 18, 10);
+    printf("        \\/     \\/     \\/          \\/  ");
+
+    // 绘制绿色副标题
+    setColor(GREEN);
+    setCursorPosition(centerX - 7, 12);
+    printf("经典贪吃蛇游戏");
+
+    // 绘制蓝色分隔线
+    setColor(BLUE);
+    setCursorPosition(centerX - 19, 14);
+    printf("======================================");
+}
+
+
+// 功能：绘制主菜单（开始游戏、难度设置、退出游戏）
+// 参数：selected - 当前选中的菜单项索引
+void drawMenu(int selected) {
+    ConsoleInfo console = getConsoleInfo();
+    int centerX = console.width / 2;  // 控制台中心X坐标
+
+    // 绘制"开始游戏"选项（选中时黄色高亮）
+    setColor(selected == MENU_START ? YELLOW : WHITE);
+    setCursorPosition(centerX - 6, 18);
+    printf(selected == MENU_START ? "> 开始游戏 <" : "  开始游戏  ");
+
+    // 绘制"难度设置"选项
+    setColor(selected == MENU_DIFFICULTY ? YELLOW : WHITE);
+    setCursorPosition(centerX - 6, 20);
+    printf(selected == MENU_DIFFICULTY ? "> 难度设置 <" : "  难度设置  ");
+
+    // 绘制"退出游戏"选项
+    setColor(selected == MENU_EXIT ? YELLOW : WHITE);
+    setCursorPosition(centerX - 6, 22);
+    printf(selected == MENU_EXIT ? "> 退出游戏 <" : "  退出游戏  ");
+}
+
+
+// 功能：绘制难度选择菜单（简单、中等、困难、噩梦）
+// 返回：选中的难度（EASY/MEDIUM/HARD/DEVIL）
+int drawDifficultyMenu() {
+    clearScreen();  // 清屏
+    drawGameTitle();  // 绘制标题
+
+    int selected = EASY;  // 默认选中简单难度
+    int key;  // 存储按键值
+
+    ConsoleInfo console = getConsoleInfo();
+    int centerX = console.width / 2;  // 控制台中心X坐标
+
+    while (1) {  // 循环等待用户选择
+        setColor(WHITE);
+        setCursorPosition(centerX - 10, 16);
+        printf("请选择游戏难度:");
+
+        // 绘制"简单"难度选项
+        setColor(selected == EASY ? YELLOW : WHITE);
+        setCursorPosition(centerX - 6, 18);
+        printf(selected == EASY ? "> 简单 <" : "  简单  ");
+
+        // 绘制"中等"难度选项
+        setColor(selected == MEDIUM ? YELLOW : WHITE);
+        setCursorPosition(centerX - 6, 20);
+        printf(selected == MEDIUM ? "> 中等 <" : "  中等  ");
+
+        // 绘制"困难"难度选项
+        setColor(selected == HARD ? YELLOW : WHITE);
+        setCursorPosition(centerX - 6, 22);
+        printf(selected == HARD ? "> 困难 <" : "  困难  ");
+
+        // 绘制"噩梦"难度选项
+        setColor(selected == DEVIL ? YELLOW : WHITE);
+        setCursorPosition(centerX - 6, 24);
+        printf(selected == DEVIL ? "> 噩梦 <" : "  噩梦  ");
+
+        // 绘制操作提示
+        setColor(BLUE);
+        setCursorPosition(centerX - 15, 26);
+        printf("使用 ↑ ↓ 键选择，按Enter确认");
+
+        if (_kbhit()) {  // 检测到按键
+            key = _getch();  // 获取按键
+
+            if (key == 224 || key == 0) {  // 方向键（扩展ASCII码）
+                key = _getch();  // 获取实际方向键值
+                switch (key) {
+                case 72:  // 上箭头
+                    // 选中项上移（简单→噩梦循环）
+                    selected = (selected == EASY) ? DEVIL : selected - 1;
+                    break;
+                case 80:  // 下箭头
+                    // 选中项下移（噩梦→简单循环）
+                    selected = (selected == DEVIL) ? EASY : selected + 1;
+                    break;
+                }
+            }
+            else if (key == 13) {  // 回车键（确认选择）
+                clearScreen();
+                return selected;  // 返回选中的难度
+            }
+            else if (key == 27) {  // ESC键（取消，返回-1）
+                clearScreen();
+                return -1;
+            }
+        }
+        Sleep(100);  // 短暂延迟，减少CPU占用
+    }
+}
+
+
+// 功能：绘制开始菜单（主界面），返回选中的难度
+// 参数：dif - 当前难度（用于保存用户之前的选择）
+int drawStartScreen(int dif) {
+    int selected = MENU_START;  // 默认选中"开始游戏"
+    int currentDifficulty = dif;  // 当前难度
+
+    while (1) {  // 循环等待用户操作
+        drawGameTitle();  // 绘制标题
+        drawMenu(selected);  // 绘制菜单
+
+        if (_kbhit()) {  // 检测到按键
+            int key = _getch();  // 获取按键
+
+            if (key == 224 || key == 0) {  // 方向键
+                key = _getch();  // 获取实际方向键值
+                switch (key) {
+                case 72:  // 上箭头：选中项上移
+                    selected = (selected == MENU_START) ? MENU_EXIT : selected - 1;
+                    break;
+                case 80:  // 下箭头：选中项下移
+                    selected = (selected == MENU_EXIT) ? MENU_START : selected + 1;
+                    break;
+                }
+            }
+            else if (key == 13) {  // 回车键（确认选择）
+                switch (selected) {
+                case MENU_START:  // 开始游戏
+                    clearScreen();
+                    return currentDifficulty;  // 返回当前难度
+
+                case MENU_DIFFICULTY:  // 难度设置
+                    clearScreen();
+                    int newDifficulty = drawDifficultyMenu();  // 获取新难度
+                    if (newDifficulty != -1) {  // 若用户确认选择
+                        currentDifficulty = newDifficulty;  // 更新当前难度
+                    }
+                    break;
+
+                case MENU_EXIT:  // 退出游戏
+                    exit(0);  // 终止程序
+                }
+            }
+            else if (key == 27) {  // ESC键（退出游戏）
+                exit(0);
+            }
+        }
+        Sleep(100);  // 短暂延迟，减少CPU占用
+    }
+}
+
+
+// 主函数：程序入口，控制游戏整体流程
+int main() {
+    system("title 贪吃蛇游戏 - 按R重置 按P暂停");  // 设置窗口标题
+    hideCursor();  // 隐藏光标（避免闪烁）
+
+    // 显示游戏提示（3秒后进入菜单）
+    printf("tips:长按可以加速...");
+    Sleep(500);  // 等待0.5秒
+    printf("  不同的食物有不同的效果和分数...");
+    Sleep(500);  // 再等待0.5秒
+
+    int difficulty = EASY;  // 默认难度为简单
+
+    while (1) {  // 游戏主循环（可重复开始）
+        // 显示开始菜单，获取用户选择的难度
+        difficulty = drawStartScreen(difficulty);
+
+        GameState game;  // 游戏状态变量
+        initGame(&game, difficulty);  // 初始化游戏
+
+        int speed = NORMAL_SPEED;  // 初始速度
+        bool isSpeeding = false;   // 是否加速
+
+        // 游戏循环（每帧更新，直到游戏结束）
+        while (!game.gameOver) {
+            drawBoundary(&game);  // 绘制边框和信息栏
+            drawGameElements(&game, isSpeeding);  // 绘制蛇、食物等
+            isSpeeding = input(&game, game.snake.dir);  // 处理输入
+
+            // 根据难度和加速状态设置基础速度
+            if (difficulty != DEVIL)
+                speed = isSpeeding ? FAST_SPEED : NORMAL_SPEED;
+            else
+                speed = isSpeeding ? DEVIL_FAST_SPEED : DEVIL_SPEED;
+
+            // 应用食物效果（修改速度）
+            switch (game.ef) {
+            case normal: speed *= 1.0; break;  // 无效果
+            case Speed:  speed *= 0.5; break;  // 加速（速度减半）
+            case slow:   speed *= 2.5; break;  // 减速（速度×2.5）
+            case reverse:speed *= 0.01; break; // 反向效果（极快）
+            }
+
+            update(&game);  // 更新游戏状态（蛇移动、碰撞检测等）
+            Sleep(speed);  // 控制帧率（等待speed毫秒）
+        }
+
+        // 游戏结束处理
+        ConsoleInfo console = getConsoleInfo();
+
+        // 显示游戏结束信息
+        setCursorPosition(console.offsetX, console.offsetY + game.height + 6);
+        setColor(YELLOW);
+        printf("  ===== GAME OVER =====");
+
+        // 显示最终分数
+        setCursorPosition(console.offsetX, console.offsetY + game.height + 7);
+        printf("  Final Score: %d", game.score);
+
+        // 若创纪录，更新并保存最高分
+        if (game.score > game.highScore) {
+            game.highScore = game.score;
+            saveHighScore(game.highScore);  // 保存新最高分
+            setColor(GREEN);
+            setCursorPosition(console.offsetX, console.offsetY + game.height + 8);
+            printf("NEW HIGH SCORE!");
+        }
+
+        // 显示后续操作提示
+        setColor(WHITE);
+        setCursorPosition(console.offsetX, console.offsetY + game.height + 10);
+        printf("  Press 'R' to restart or 'ESC' to return to menu");
+
+        // 释放蛇链表内存（防止泄漏）
+        freeSnake(&game.snake);
+
+        // 等待用户操作（重启或返回菜单）
+        while (1) {
+            if (_kbhit()) {  // 检测到按键
+                int key = _getch();
+                if (key == 'r' || key == 'R') {  // R键：重启游戏
+                    clearScreen();
+                    break;
+                }
+                else if (key == 27) {  // ESC键：返回菜单
+                    clearScreen();
+                    break;
+                }
+            }
+            Sleep(100);  // 短暂延迟
+        }
+    }
+
+    return 0;  // 程序正常结束（实际不会执行到此处）
+}
